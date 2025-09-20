@@ -1,0 +1,85 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, to_timestamp, avg, max, sum, round, when
+from pyspark.sql.utils import AnalysisException
+
+def main():
+    """
+    Main function for the silver layer transformation.
+    This final version includes division-by-zero protection, the on-time status KPI,
+    and the new cargo load category for BI.
+    """
+
+    # --- Configuration ---
+    STORAGE_ACCOUNT_NAME = "esg01storage"
+    BRONZE_CONTAINER = "datawarehouse"
+    SILVER_CONTAINER = "datawarehouse"
+
+    # --- Input Paths ---
+    fleet_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
+    truck_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
+    silver_output_path = f"abfss://{SILVER_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/silver/delivery_summary/"
+
+    fleet_df = spark.read.format("delta").load(fleet_bronze_path)
+    truck_df = spark.read.format("delta").load(truck_bronze_path)
+
+    # --- 1. Clean and Transform Fleet Data ---
+    fleet_silver_df = (fleet_df
+        .withColumn("pickup_ts", to_timestamp(col("pickup_time")))
+        .withColumn("delivery_ts", to_timestamp(col("delivery_time")))
+        .withColumn("delivery_duration_hours", 
+            round((col("delivery_ts").cast("long") - col("pickup_ts").cast("long")) / 3600, 2)
+        )
+        .select(
+            "delivery_id", "delivery_status", "cargo_type", "driver_id", "truck_id",
+            "pickup_ts", "delivery_ts", "delivery_duration_hours",
+            col("trip_distance_km"), 
+            col("cargo_weight_ton"),
+            col("location").alias("delivery_location"),
+            col("ingestion_time").alias("bronze_ingestion_time")
+        )
+    )
+
+    # --- 2. Aggregate Truck Telemetry Data ---
+    truck_agg_df = (truck_df
+        .groupBy("delivery_id")
+        .agg(
+            round(avg("speed"), 2).alias("avg_speed_kmh"),
+            round(max("engine_temp"), 2).alias("max_engine_temp_celsius"),
+            round(sum("fuel_used"), 2).alias("total_fuel_used_liters"),
+            round(sum("co2_emitted"), 2).alias("total_co2_emitted_kg")
+        )
+    )
+
+    # --- 3. Join and Calculate Final KPIs with Protections ---
+    delivery_summary_df = (fleet_silver_df.join(truck_agg_df, "delivery_id", "left")
+        .withColumn("fuel_efficiency_km_per_liter", 
+            when(col("total_fuel_used_liters") > 0, round(col("trip_distance_km") / col("total_fuel_used_liters"), 2))
+            .otherwise(0)
+        )
+        .withColumn("co2_efficiency_kg_per_km", 
+            when(col("trip_distance_km") > 0, round(col("total_co2_emitted_kg") / col("trip_distance_km"), 2))
+            .otherwise(0)
+        )
+        .withColumn("on_time_status",
+            when(col("avg_speed_kmh").isNull(), "Status Unknown")
+            .when(col("avg_speed_kmh") < 40, "Delayed")
+            .otherwise("On-Time")
+        )
+        .withColumn("cargo_load_category",
+            when(col("cargo_weight_ton") > 15, "Heavy Load")
+            .when(col("cargo_weight_ton") > 10, "Medium Load")
+            .otherwise("Light Load")
+        )
+    )
+
+    # --- 4. Write to Silver Layer ---
+    (delivery_summary_df.write
+        .format("delta").mode("overwrite").option("overwriteSchema", "true").save(silver_output_path))
+    
+    print("Successfully wrote delivery_summary to silver layer.")
+    display(delivery_summary_df)
+
+
+if __name__ == "__main__":
+    main()
+
