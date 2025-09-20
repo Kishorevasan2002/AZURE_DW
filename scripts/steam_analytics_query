@@ -1,0 +1,41 @@
+SELECT
+    delivery_id,
+    truck_id,
+    driver_id,
+    pickup_time,
+    delivery_time,
+    trip_distance_km,
+    cargo_weight_ton,
+    cargo_type,
+    delivery_status,
+    location,
+    event_type,
+    CONCAT(
+        'year=', DATENAME(yyyy, CAST(pickup_time AS datetime)), '/',
+        'month=', RIGHT('0' + CAST(DATEPART(mm, CAST(pickup_time AS datetime)) AS NVARCHAR(max)), 2), '/',
+        'day=', RIGHT('0' + CAST(DATEPART(dd, CAST(pickup_time AS datetime)) AS NVARCHAR(max)), 2), '/',
+        'hour=', RIGHT('0' + CAST(DATEPART(hh, CAST(pickup_time AS datetime)) AS NVARCHAR(max)), 2), '/'
+    ) AS CustomPath
+INTO OUTPUTDELIVERY
+FROM INPUTFLEET;
+
+---------------------------------------------------------------------------------------------------------------------
+
+SELECT
+    delivery_id,
+    truck_id,
+    speed,
+    fuel_used,
+    co2_emitted,
+    engine_temp,
+    event_date,
+    EventTimestamp,
+    event_type,
+    CONCAT(
+        'year=', DATENAME(yyyy, CAST(EventTimestamp AS datetime)), '/',
+        'month=', RIGHT('0' + CAST(DATEPART(mm, CAST(EventTimestamp AS datetime)) AS NVARCHAR(max)), 2), '/',
+        'day=', RIGHT('0' + CAST(DATEPART(dd, CAST(EventTimestamp AS datetime)) AS NVARCHAR(max)), 2), '/',
+        'hour=', RIGHT('0' + CAST(DATEPART(hh, CAST(EventTimestamp AS datetime)) AS NVARCHAR(max)), 2), '/'
+    ) AS CustomPath
+INTO OUTPUTTELEMETRY
+FROM INPUTTRUCK;
