@@ -343,6 +343,14 @@ if __name__ == "__main__":
 
 ---
 
+![Screenshot 2025-09-20 140132-mh](https://github.com/user-attachments/assets/0f6fdd90-9c4d-4171-885a-3000ac06e33d)
+
+---
+
+<img width="1592" height="440" alt="Screenshot 2025-09-20 123325-mh" src="https://github.com/user-attachments/assets/4f43dd88-2aed-425e-8ffa-8c77e4e76255" />
+
+---
+
 3. **Power BI Connection**
    - In **Power BI Desktop** → `Get Data > Azure Synapse Analytics SQL`  
    - Enter Synapse Serverless SQL endpoint:  
