@@ -1,0 +1,12 @@
+CREATE DATABASE GoldDB;
+GO
+USE GoldDB;
+GO
+CREATE VIEW vw_enriched_delivery_performance
+AS
+SELECT *
+FROM
+    OPENROWSET(
+        BULK 'abfss://datawarehouse@esg01storage.dfs.core.windows.net/gold/enriched_delivery_performance/',
+        FORMAT = 'DELTA'
+    ) AS [result]
