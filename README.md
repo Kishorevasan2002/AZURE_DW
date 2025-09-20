@@ -41,7 +41,8 @@ The **Medallion Architecture** ensures progressive data refinement.
 
 ## Architecture
 The platform follows a **streaming + batch processing architecture**, moving data through **Bronze, Silver, and Gold layers**.
-<img width="2274" height="1014" alt="diagram-export-9-20-2025-11_30_45-AM" src="https://github.com/user-attachments/assets/cecfca86-5225-42f0-86da-d012506b1bea" />
+<img width="2274" height="854" alt="diagram-export-9-20-2025-11_30_45-AM" src="https://github.com/user-attachments/assets/6a3b36fb-42b9-4e22-a6cc-ffc1ddaedf18" />
+
 **Data Flow:**
 1. **Ingestion** – A Python simulator generates JSON data (fleet deliveries & truck telemetry) → sent to **Azure Event Hubs**.  
 2. **Stream Processing** – **Azure Stream Analytics** captures events, performs shaping, and lands data in **Azure Data Lake Storage Gen2 (ADLS)**.  
@@ -83,27 +84,11 @@ The platform follows a **streaming + batch processing architecture**, moving dat
 ### Execution Order
 
 1. **Data Processing Pipeline**
-   - Run **Bronze ingestion script**  
+   - Run **Bronze ingestion script**(sample_code_snipets)
  
 ```
-import os
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import current_timestamp
-from delta.tables import DeltaTable
-
 def process_and_merge_data(spark: input_path: str, output_path: str, unique_keys: list, data_source_name: str):
-    """
-    Reads JSON data, deduplicates it, and merges it into a Delta table,
-    providing accurate logging on the number of new records inserted.
-
-    Args:
-        input_path: The source path for the JSON files.
-        output_path: The destination path for the Delta table.
-        unique_keys: A list of column names to use for deduplication.
-        data_source_name: A descriptive name for the data source for logging.
-    """
     print(f"Starting ingestion for {data_source_name} from {input_path}")
-
     try:
         # Read the new data from the source path
         new_data_df = spark.read.json(input_path)
@@ -156,41 +141,18 @@ def process_and_merge_data(spark: input_path: str, output_path: str, unique_keys
 
 
 if __name__ == "__main__":
-
-    # --- Configuration ---
-    STORAGE_ACCOUNT_NAME = "esg01storage"
-    FLEET_CONTAINER = "rawdelivery"
-    TRUCK_CONTAINER = "rawtelemetry"
-    BRONZE_CONTAINER = "datawarehouse"
-
-    fleet_source_path = f"abfss://{FLEET_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/"
-    truck_source_path = f"abfss://{TRUCK_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/"
-    fleet_destination_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
-    truck_destination_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
-
     # --- Process Data ---
     process_and_merge_data(spark, fleet_source_path, fleet_destination_path, ["delivery_id"], "Fleet")
     process_and_merge_data(spark, truck_source_path, truck_destination_path, ["delivery_id", "EventTimestamp"], "Truck Telemetry")
     
 ```
 ---
-   - Run **Silver transformation script**
+   - Run **Silver transformation script**(sample_code_snipets)
 ```
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_timestamp, avg, max, sum, round, when
-from pyspark.sql.utils import AnalysisException
-
 def main():
     """
     Main function for the  silver layer transformation.
     """
-    
-
-    # --- Configuration ---
-    STORAGE_ACCOUNT_NAME = "esg01storage"
-    BRONZE_CONTAINER = "datawarehouse"
-    SILVER_CONTAINER = "datawarehouse"
-
     # --- Input Paths (Bronze Layer) ---
     fleet_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
     truck_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
@@ -283,38 +245,15 @@ def main():
     # # Using display() is often better in notebooks for interactive viewing
     # display(silver_df_test)
 
-
 if __name__ == "__main__":
     main()
 
 ```
 ---
-   - Run **Gold enrichment script**
-```from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date
-from pyspark.sql.utils import AnalysisException
-
+   - Run **Gold enrichment script**(sample_code_snipets)
+```
 def main():
-    """
-    Main function to create the final, enriched gold table.
-    This script joins the silver layer with all reference tables to create a single,
-    wide table perfect for BI dashboards and analytics.
-    """
     spark = SparkSession.builder.getOrCreate()
-    
-    # --- Configuration ---
-    STORAGE_ACCOUNT_NAME = "esg01storage"
-    CONTAINER = "datawarehouse"
-
-    # --- Input Paths (Updated to reflect new reference table locations) ---
-    silver_input_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/silver/delivery_summary/"
-    driver_details_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/driver_details/"
-    truck_details_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/truck_details/"
-    location_details_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/location_details/"
-    
-    # --- Output Path (Gold Layer) ---
-    gold_output_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/enriched_delivery_performance/"
-
     print("--- Reading Silver and All Reference Tables ---")
     try:
         silver_df = spark.read.format("delta").load(silver_input_path)
