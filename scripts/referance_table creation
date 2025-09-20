@@ -1,0 +1,97 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType, DateType
+import datetime
+import random
+
+def main():
+    """
+    Main function to create and save enriched dimensional reference tables for
+    drivers, trucks, and locations. This is typically a one-off script.
+    """
+    # --- Configuration ---
+    STORAGE_ACCOUNT_NAME = "esg01storage"
+    REFERENCE_CONTAINER = "datawarehouse"
+
+    # --- Output Paths ---
+    driver_details_path = f"abfss://{REFERENCE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/driver_details/"
+    truck_details_path = f"abfss://{REFERENCE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/truck_details/"
+    location_details_path = f"abfss://{REFERENCE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/location_details/"
+
+    # --- 1. Create Enriched Driver Details Table ---
+    print("--- Creating Enriched Driver Details Table ---")
+    driver_schema = StructType([
+        StructField("driver_id", IntegerType(), False),
+        StructField("driver_name", StringType(), False),
+        StructField("hire_date", DateType(), False),
+        StructField("driver_location", StringType(), False),
+        StructField("experience_level", StringType(), False)
+    ])
+    
+    locations = ["Mumbai", "Delhi", "Bangalore", "Hyderabad"]
+    driver_data = []
+    for i in range(200, 301):
+        hire_date = datetime.date(2022, 1, 1) + datetime.timedelta(days=(i-200)*10)
+        experience = "Senior" if (datetime.date.today() - hire_date).days > 730 else "Mid-Level" if (datetime.date.today() - hire_date).days > 365 else "Junior"
+        driver_data.append((i, f"Driver_{i}", hire_date, random.choice(locations), experience))
+    
+    driver_df = spark.createDataFrame(data=driver_data, schema=driver_schema)
+    (driver_df.write
+        .format("delta").mode("overwrite").option("overwriteSchema", "true").save(driver_details_path))
+    print(f"Successfully wrote driver_details to {driver_details_path}")
+    display(driver_df)
+
+    # --- 2. Create Enriched Truck Details Table ---
+    print("\n--- Creating Enriched Truck Details Table ---")
+    truck_schema = StructType([
+        StructField("truck_id", IntegerType(), False),
+        StructField("truck_model", StringType(), False),
+        StructField("year_of_manufacture", IntegerType(), False),
+        StructField("load_capacity_tons", IntegerType(), False),
+        StructField("emission_standard", StringType(), False),
+        StructField("last_maintenance_date", DateType(), False)
+    ])
+
+    emission_standards = ["BS6", "BS4", "Euro 6"]
+    truck_data = []
+    for i in range(1, 51):
+        maintenance_date = datetime.date.today() - datetime.timedelta(days=random.randint(15, 180))
+        truck_data.append((
+            i, 
+            f"Model-{'A' if i % 3 == 0 else 'B' if i % 3 == 1 else 'C'}", 
+            2020 + (i % 5), 
+            10 + (i % 4), 
+            random.choice(emission_standards),
+            maintenance_date
+        ))
+
+    truck_df = spark.createDataFrame(data=truck_data, schema=truck_schema)
+    (truck_df.write
+        .format("delta").mode("overwrite").option("overwriteSchema", "true").save(truck_details_path))
+    print(f"Successfully wrote truck_details to {truck_details_path}")
+    display(truck_df)
+
+    # --- 3. Create New Location Details Table ---
+    print("\n--- Creating Location Details Table ---")
+    location_schema = StructType([
+        StructField("location_name", StringType(), False),
+        StructField("region", StringType(), False),
+        StructField("traffic_index", StringType(), False),
+        StructField("warehouse_capacity", IntegerType(), False)
+    ])
+
+    location_data = [
+        ("Mumbai", "West", "High", 5000),
+        ("Delhi", "North", "High", 4500),
+        ("Bangalore", "South", "Medium", 6000),
+        ("Hyderabad", "South", "Medium", 5500)
+    ]
+
+    location_df = spark.createDataFrame(data=location_data, schema=location_schema)
+    (location_df.write
+        .format("delta").mode("overwrite").option("overwriteSchema", "true").save(location_details_path))
+    print(f"Successfully wrote location_details to {location_details_path}")
+    display(location_df)
+
+if __name__ == "__main__":
+    main()
+
