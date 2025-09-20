@@ -1,0 +1,86 @@
+import os
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import current_timestamp
+from delta.tables import DeltaTable
+
+def process_and_merge_data(input_path: str, output_path: str, unique_keys: list, data_source_name: str):
+    """
+    Reads JSON data, deduplicates it, and merges it into a Delta table,
+    providing accurate logging on the number of new records inserted.
+
+    Args:
+        input_path: The source path for the JSON files.
+        output_path: The destination path for the Delta table.
+        unique_keys: A list of column names to use for deduplication.
+        data_source_name: A descriptive name for the data source for logging.
+    """
+    print(f"Starting ingestion for {data_source_name} from {input_path}")
+
+    try:
+        # Read the new data from the source path
+        new_data_df = spark.read.json(input_path)
+
+        if new_data_df.rdd.isEmpty():
+            print(f"No new data found for {data_source_name}. Skipping.")
+            return
+
+        updates_df = (new_data_df
+                      .withColumn("ingestion_time", current_timestamp())
+                      .dropDuplicates(unique_keys)
+                     )
+        
+        # This log now represents records read from the source for processing
+        print(f"Found {updates_df.count()} unique records in source to process for {data_source_name}.")
+
+        if DeltaTable.isDeltaTable(spark, output_path):
+            print(f"Delta table found at {output_path}. Merging data...")
+            delta_table = DeltaTable.forPath(spark, output_path)
+
+            # Get the count before the merge to calculate the difference later
+            count_before = delta_table.toDF().count()
+
+            merge_condition = " AND ".join([f"target.{key} = updates.{key}" for key in unique_keys])
+
+            # Perform the merge operation. Note: .execute() returns None.
+            delta_table.alias("target").merge(updates_df.alias("updates"),condition=merge_condition).whenNotMatchedInsertAll() \
+            .option("mergeSchema", "true") \
+            .execute()
+            
+            # Get the count after the merge
+            count_after = DeltaTable.forPath(spark, output_path).toDF().count()
+            
+            # Calculate the number of newly inserted rows
+            rows_inserted = count_after - count_before
+            
+            # Provide the accurate log message
+            print(f"Merge complete. Inserted {rows_inserted} new records into the table.")
+
+        else:
+            print(f"Creating new Delta table for {data_source_name} at {output_path}")
+            updates_df.write \
+            .format("delta") \
+            .mode("overwrite") \
+            .option("overwriteSchema", "true") \
+            .save(output_path)
+            print("New table created.")
+    except Exception as e:
+        print(f"An error occurred during ingestion for {data_source_name}: {e}")
+
+
+if __name__ == "__main__":
+
+    # --- Configuration ---
+    STORAGE_ACCOUNT_NAME = "esg01storage"
+    FLEET_CONTAINER = "rawdelivery"
+    TRUCK_CONTAINER = "rawtelemetry"
+    BRONZE_CONTAINER = "datawarehouse"
+
+    fleet_source_path = f"abfss://{FLEET_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/"
+    truck_source_path = f"abfss://{TRUCK_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/"
+    fleet_destination_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
+    truck_destination_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
+
+    # --- Process Data ---
+    process_and_merge_data(spark, fleet_source_path, fleet_destination_path, ["delivery_id"], "Fleet")
+    process_and_merge_data(spark, truck_source_path, truck_destination_path, ["delivery_id", "EventTimestamp"], "Truck Telemetry")
+    
