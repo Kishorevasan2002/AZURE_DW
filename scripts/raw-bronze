@@ -3,12 +3,13 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import current_timestamp
 from delta.tables import DeltaTable
 
-def process_and_merge_data(input_path: str, output_path: str, unique_keys: list, data_source_name: str):
+def process_and_merge_data(spark: SparkSession, input_path: str, output_path: str, unique_keys: list, data_source_name: str):
     """
     Reads JSON data, deduplicates it, and merges it into a Delta table,
     providing accurate logging on the number of new records inserted.
 
     Args:
+        spark: The active SparkSession.
         input_path: The source path for the JSON files.
         output_path: The destination path for the Delta table.
         unique_keys: A list of column names to use for deduplication.
@@ -41,10 +42,13 @@ def process_and_merge_data(input_path: str, output_path: str, unique_keys: list,
 
             merge_condition = " AND ".join([f"target.{key} = updates.{key}" for key in unique_keys])
 
-            # Perform the merge operation. Note: .execute() returns None.
-            delta_table.alias("target").merge(updates_df.alias("updates"),condition=merge_condition).whenNotMatchedInsertAll() \
-            .option("mergeSchema", "true") \
-            .execute()
+            # Perform the merge operation. 
+            # The invalid .option("mergeSchema", "true") has been removed.
+            # Schema evolution is now handled by the Spark session configuration set in the main block.
+            (delta_table.alias("target")
+             .merge(updates_df.alias("updates"), condition=merge_condition)
+             .whenNotMatchedInsertAll()
+             .execute())
             
             # Get the count after the merge
             count_after = DeltaTable.forPath(spark, output_path).toDF().count()
@@ -53,7 +57,7 @@ def process_and_merge_data(input_path: str, output_path: str, unique_keys: list,
             rows_inserted = count_after - count_before
             
             # Provide the accurate log message
-            print(f"Merge complete. Inserted {rows_inserted} new records into the table.")
+            print(f"Merge complete. Inserted {rows_inserted} new records into the {data_source_name} table.")
 
         else:
             print(f"Creating new Delta table for {data_source_name} at {output_path}")
@@ -70,6 +74,9 @@ def process_and_merge_data(input_path: str, output_path: str, unique_keys: list,
 if __name__ == "__main__":
 
     # --- Configuration ---
+    # Enable automatic schema evolution for merge operations. This is a standard Delta Lake setting.
+    spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+
     STORAGE_ACCOUNT_NAME = "esg01storage"
     FLEET_CONTAINER = "rawdelivery"
     TRUCK_CONTAINER = "rawtelemetry"
@@ -83,4 +90,6 @@ if __name__ == "__main__":
     # --- Process Data ---
     process_and_merge_data(spark, fleet_source_path, fleet_destination_path, ["delivery_id"], "Fleet")
     process_and_merge_data(spark, truck_source_path, truck_destination_path, ["delivery_id", "EventTimestamp"], "Truck Telemetry")
-    
+
+
+
