@@ -5,19 +5,22 @@ import random
 
 def main():
     """
-    Main function to create and save enriched dimensional reference tables for
-    drivers, trucks, and locations. This is typically a one-off script.
+    Main function to create and save enriched dimensional reference tables.
+    This definitive version is corrected to generate driver and truck IDs that
+    perfectly match the range and format of the actual data, ensuring joins will succeed.
     """
+    # In Synapse, the spark session is already available.
+
     # --- Configuration ---
     STORAGE_ACCOUNT_NAME = "esg01storage"
-    REFERENCE_CONTAINER = "datawarehouse"
+    CONTAINER = "datawarehouse"
 
     # --- Output Paths ---
-    driver_details_path = f"abfss://{REFERENCE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/driver_details/"
-    truck_details_path = f"abfss://{REFERENCE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/truck_details/"
-    location_details_path = f"abfss://{REFERENCE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/location_details/"
+    driver_details_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/driver_details/"
+    truck_details_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/truck_details/"
+    location_details_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/gold/location_details/"
 
-    # --- 1. Create Enriched Driver Details Table ---
+    # --- 1. Create Enriched Driver Details Table (CORRECTED ID RANGE) ---
     print("--- Creating Enriched Driver Details Table ---")
     driver_schema = StructType([
         StructField("driver_id", IntegerType(), False),
@@ -27,18 +30,22 @@ def main():
         StructField("experience_level", StringType(), False)
     ])
     
-    locations = ["Mumbai", "Delhi", "Bangalore", "Hyderabad"]
+    locations = [
+        "Tirunelveli", "Chennai", "Coimbatore", "Madurai", "Tiruchirappalli",
+        "Salem", "Thoothukudi", "Kanyakumari", "Nagercoil", "Vellore"
+    ]
     driver_data = []
-    for i in range(200, 301):
-        hire_date = datetime.date(2022, 1, 1) + datetime.timedelta(days=(i-200)*10)
+    # **FIX**: Generating driver IDs from 1 to 300 to match the full range of the actual data
+    for i in range(1, 301):
+        hire_date = datetime.date(2022, 1, 1) + datetime.timedelta(days=random.randint(1, 1000))
         experience = "Senior" if (datetime.date.today() - hire_date).days > 730 else "Mid-Level" if (datetime.date.today() - hire_date).days > 365 else "Junior"
         driver_data.append((i, f"Driver_{i}", hire_date, random.choice(locations), experience))
     
     driver_df = spark.createDataFrame(data=driver_data, schema=driver_schema)
     (driver_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(driver_details_path))
-    print(f"Successfully wrote driver_details to {driver_details_path}")
-    display(driver_df)
+    print(f"✅ Successfully wrote driver_details to {driver_details_path}")
+    display(driver_df.limit(5))
 
     # --- 2. Create Enriched Truck Details Table ---
     print("\n--- Creating Enriched Truck Details Table ---")
@@ -53,6 +60,7 @@ def main():
 
     emission_standards = ["BS6", "BS4", "Euro 6"]
     truck_data = []
+    # Generating truck IDs from 1 to 50, consistent with typical data
     for i in range(1, 51):
         maintenance_date = datetime.date.today() - datetime.timedelta(days=random.randint(15, 180))
         truck_data.append((
@@ -67,11 +75,11 @@ def main():
     truck_df = spark.createDataFrame(data=truck_data, schema=truck_schema)
     (truck_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(truck_details_path))
-    print(f"Successfully wrote truck_details to {truck_details_path}")
-    display(truck_df)
+    print(f"✅ Successfully wrote truck_details to {truck_details_path}")
+    display(truck_df.limit(5))
 
-    # --- 3. Create New Location Details Table ---
-    print("\n--- Creating Location Details Table ---")
+    # --- 3. Create New Location Details Table (Context-Aware and Geographically Correct) ---
+    print("\n--- Creating Location Details Table with Correct Regions ---")
     location_schema = StructType([
         StructField("location_name", StringType(), False),
         StructField("region", StringType(), False),
@@ -80,16 +88,22 @@ def main():
     ])
 
     location_data = [
-        ("Mumbai", "West", "High", 5000),
-        ("Delhi", "North", "High", 4500),
-        ("Bangalore", "South", "Medium", 6000),
-        ("Hyderabad", "South", "Medium", 5500)
+        ("Tirunelveli", "South", "Medium", 3000),
+        ("Chennai", "East", "High", 8000),
+        ("Coimbatore", "West", "High", 7500),
+        ("Madurai", "South", "Medium", 4500),
+        ("Tiruchirappalli", "Central", "Medium", 4000),
+        ("Salem", "West", "Medium", 3500),
+        ("Thoothukudi", "East", "Low", 5000),
+        ("Kanyakumari", "South", "Low", 1500),
+        ("Nagercoil", "South", "Medium", 2000),
+        ("Vellore", "North", "Medium", 2500)
     ]
 
     location_df = spark.createDataFrame(data=location_data, schema=location_schema)
     (location_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(location_details_path))
-    print(f"Successfully wrote location_details to {location_details_path}")
+    print(f"✅ Successfully wrote location_details to {location_details_path}")
     display(location_df)
 
 if __name__ == "__main__":
