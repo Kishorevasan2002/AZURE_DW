@@ -44,7 +44,7 @@ def main():
     driver_df = spark.createDataFrame(data=driver_data, schema=driver_schema)
     (driver_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(driver_details_path))
-    print(f"✅ Successfully wrote driver_details to {driver_details_path}")
+    print(f" Successfully wrote driver_details to {driver_details_path}")
     display(driver_df.limit(5))
 
     # --- 2. Create Enriched Truck Details Table ---
@@ -75,7 +75,7 @@ def main():
     truck_df = spark.createDataFrame(data=truck_data, schema=truck_schema)
     (truck_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(truck_details_path))
-    print(f"✅ Successfully wrote truck_details to {truck_details_path}")
+    print(f" Successfully wrote truck_details to {truck_details_path}")
     display(truck_df.limit(5))
 
     # --- 3. Create New Location Details Table (Context-Aware and Geographically Correct) ---
@@ -103,7 +103,7 @@ def main():
     location_df = spark.createDataFrame(data=location_data, schema=location_schema)
     (location_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(location_details_path))
-    print(f"✅ Successfully wrote location_details to {location_details_path}")
+    print(f" Successfully wrote location_details to {location_details_path}")
     display(location_df)
 
 if __name__ == "__main__":
