@@ -1,11 +1,12 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_date, hour, when
+from pyspark.sql.functions import col, to_date, hour, when, substring_index
 from pyspark.sql.utils import AnalysisException
 
 def main():
     """
     Main function to create the final, enriched gold table.
-    This definitive version includes all new KPIs from the Silver layer.
+    This corrected version cleans the join keys from the Silver table to handle
+    prefixed IDs (e.g., 'DVR-29'), ensuring the joins with reference tables succeed.
     """
     
     # --- Configuration ---
@@ -25,13 +26,23 @@ def main():
     truck_df = spark.read.format("delta").load(truck_details_path)
     location_df = spark.read.format("delta").load(location_details_path)
 
-    # --- 1. Enrich and Categorize ---
+    # --- 1. Clean the Join Keys in the Silver DataFrame ---
+    print("\n--- Cleaning prefixed join keys from Silver data ---")
+    silver_df_cleaned = (silver_df
+        # Create a new, clean numeric column for driver_id
+        .withColumn("join_driver_id", substring_index(col("driver_id"), '-', -1).cast("integer"))
+        # Create a new, clean numeric column for truck_id
+        .withColumn("join_truck_id", substring_index(col("truck_id"), '-', -1).cast("integer"))
+    )
+
+    # --- 2. Enrich and Categorize ---
     print("\n--- Enriching performance data with all available context ---")
     
-    enriched_df = (silver_df
-        .join(driver_df, "driver_id", "left")
-        .join(truck_df, "truck_id", "left")
-        .join(location_df, silver_df.delivery_location == location_df.location_name, "left")
+    # Perform joins using the new, cleaned keys
+    enriched_df = (silver_df_cleaned
+        .join(driver_df, silver_df_cleaned.join_driver_id == driver_df.driver_id, "left")
+        .join(truck_df, silver_df_cleaned.join_truck_id == truck_df.truck_id, "left")
+        .join(location_df, silver_df_cleaned.delivery_location == location_df.location_name, "left")
         .withColumn("pickup_hour", hour(col("pickup_ts")))
         .withColumn("time_of_day",
             when((col("pickup_hour") >= 5) & (col("pickup_hour") < 12), "Morning")
@@ -41,36 +52,43 @@ def main():
         )
     )
 
-    # --- 2. Select and Organize the Final Gold Table ---
+    # --- 3. Select and Organize the Final Gold Table ---
     final_gold_df = enriched_df.select(
         col("delivery_id"),
+        col("customer_id"),
         to_date(col("pickup_ts")).alias("delivery_date"),
         col("pickup_hour"),
         col("time_of_day"),
         col("delivery_status"),
         col("on_time_status"),
+        col("actual_delivery_ts"),
         col("driver_name"),
         col("experience_level"),
         col("truck_model"),
         col("emission_standard"),
         col("last_maintenance_date"),
-        col("location_name").alias("delivery_location_name"),
+        col("pickup_location"),
+        col("delivery_location"),
         col("region"),
         col("traffic_index"),
+        col("traffic_condition"),
+        col("cargo_type"),
         col("cargo_load_category"),
         col("trip_distance_km"),
         col("delivery_duration_hours"),
         col("avg_speed_kmh"),
         col("fuel_efficiency_km_per_liter"),
         col("total_co2_emitted_kg"),
-        col("co2_efficiency_kg_per_km")
+        col("co2_efficiency_kg_per_km"),
+        col("alert_type")
     ).orderBy("delivery_date", "delivery_id")
     
-    # --- 3. Write to Gold Layer ---
+    # --- 4. Write to Gold Layer ---
+    print(f"\n--- Writing {final_gold_df.count()} enriched records to the Gold layer ---")
     (final_gold_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(gold_output_path))
     
-    print("Successfully wrote enriched_delivery_performance to the gold layer.")
+    print("✅ Successfully wrote enriched_delivery_performance to the gold layer.")
     display(final_gold_df)
 
 if __name__ == "__main__":
