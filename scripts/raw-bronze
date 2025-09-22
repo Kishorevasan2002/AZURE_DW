@@ -1,80 +1,104 @@
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import current_timestamp
+from pyspark.sql.functions import current_timestamp, row_number, col, when, to_timestamp
+from pyspark.sql.window import Window
 from delta.tables import DeltaTable
 
-def process_and_merge_data(spark: SparkSession, input_path: str, output_path: str, unique_keys: list, data_source_name: str):
+def process_and_merge_data(spark: SparkSession, input_path: str, output_path: str, unique_keys: list, data_source_name: str, handle_updates: bool = False):
     """
-    Reads JSON data, deduplicates it, and merges it into a Delta table,
-    providing accurate logging on the number of new records inserted.
-
-    Args:
-        spark: The active SparkSession.
-        input_path: The source path for the JSON files.
-        output_path: The destination path for the Delta table.
-        unique_keys: A list of column names to use for deduplication.
-        data_source_name: A descriptive name for the data source for logging.
+    Reads JSON data and merges it into a Delta table.
+    This  version correctly reconstructs the complete state for entities
+    that have multiple events within a single batch, preventing data loss.
     """
     print(f"Starting ingestion for {data_source_name} from {input_path}")
 
     try:
-        # Read the new data from the source path
-        new_data_df = spark.read.json(input_path)
+        print(f"Reading from {input_path} with recursive file lookup enabled.")
+        new_data_df = (spark.read
+                       .option("recursiveFileLookup", "true")
+                       .json(input_path))
 
         if new_data_df.rdd.isEmpty():
             print(f"No new data found for {data_source_name}. Skipping.")
             return
-
-        updates_df = (new_data_df
-                      .withColumn("ingestion_time", current_timestamp())
-                      .dropDuplicates(unique_keys)
-                     )
         
-        # This log now represents records read from the source for processing
-        print(f"Found {updates_df.count()} unique records in source to process for {data_source_name}.")
+        updates_df = new_data_df.withColumn("ingestion_time", current_timestamp())
+        
+    
+        # Instead of just picking the latest event, we reconstruct the full record
+        # to ensure no data is lost when multiple events for the same key are in the batch.
+        if handle_updates:
+            print("Preprocessing source batch to reconstruct the latest complete state for each key...")
+            
+            # Create a reliable timestamp to order events within the batch
+            updates_df_with_ts = updates_df.withColumn("event_ts", 
+                to_timestamp(
+                    when(col("pickup_time").isNotNull(), col("pickup_time"))
+                    .otherwise(col("actual_delivery_time"))
+                )
+            )
+
+            window_asc = Window.partitionBy(*unique_keys).orderBy(col("event_ts").asc())
+            window_desc = Window.partitionBy(*unique_keys).orderBy(col("event_ts").desc())
+
+            # Get static details from the first event in the batch for each key
+            static_details = (updates_df_with_ts
+                              .withColumn("rn", row_number().over(window_asc))
+                              .filter(col("rn") == 1)
+                              .select(
+                                  col("delivery_id"), col("customer_id"), col("pickup_location"), 
+                                  col("delivery_location"), col("traffic_condition"), col("cargo_type"), 
+                                  col("driver_id"), col("truck_id"), col("trip_distance_km"), 
+                                  col("cargo_weight_ton"), col("pickup_time"), col("delivery_time")
+                              ))
+
+            # Get the final status from the last event in the batch for each key
+            final_status = (updates_df_with_ts
+                            .withColumn("rn", row_number().over(window_desc))
+                            .filter(col("rn") == 1)
+                            .select(col("delivery_id"), col("delivery_status"), 
+                                    col("actual_delivery_time"), col("event_type"), col("ingestion_time")))
+
+            # Join them to create the final, complete source DataFrame for the merge
+            processed_updates_df = static_details.join(final_status, unique_keys, "inner")
+        
+        else: # For telemetry data, no special processing is needed
+            processed_updates_df = updates_df.dropDuplicates(["delivery_id", "EventTimestamp"])
+
+        
+        print(f"Found {processed_updates_df.count()} unique, complete records to process for {data_source_name}.")
 
         if DeltaTable.isDeltaTable(spark, output_path):
             print(f"Delta table found at {output_path}. Merging data...")
             delta_table = DeltaTable.forPath(spark, output_path)
-
-            # Get the count before the merge to calculate the difference later
-            count_before = delta_table.toDF().count()
-
             merge_condition = " AND ".join([f"target.{key} = updates.{key}" for key in unique_keys])
 
-            # Perform the merge operation. 
-            # The invalid .option("mergeSchema", "true") has been removed.
-            # Schema evolution is now handled by the Spark session configuration set in the main block.
+            # With a complete source record, we can now safely use updateAll and insertAll
             (delta_table.alias("target")
-             .merge(updates_df.alias("updates"), condition=merge_condition)
+             .merge(processed_updates_df.alias("updates"), condition=merge_condition)
+             .whenMatchedUpdateAll()
              .whenNotMatchedInsertAll()
              .execute())
             
-            # Get the count after the merge
-            count_after = DeltaTable.forPath(spark, output_path).toDF().count()
-            
-            # Calculate the number of newly inserted rows
-            rows_inserted = count_after - count_before
-            
-            # Provide the accurate log message
-            print(f"Merge complete. Inserted {rows_inserted} new records into the {data_source_name} table.")
+            print(f"Merge complete for the {data_source_name} table.")
 
         else:
             print(f"Creating new Delta table for {data_source_name} at {output_path}")
-            updates_df.write \
-            .format("delta") \
-            .mode("overwrite") \
-            .option("overwriteSchema", "true") \
-            .save(output_path)
+            (processed_updates_df.write
+                .format("delta")
+                .mode("overwrite")
+                .option("overwriteSchema", "true")
+                .save(output_path))
             print("New table created.")
+            
     except Exception as e:
-        print(f"An error occurred during ingestion for {data_source_name}: {e}")
-
+        if "Path does not exist" in str(e):
+             print(f"ERROR: No files found in the source directory '{input_path}'. Please ensure the simulator is running.")
+        else:
+             print(f"An error occurred during ingestion for {data_source_name}: {e}")
+    display(processed_updates_df)
 
 if __name__ == "__main__":
-
-    # --- Configuration ---
-    # Enable automatic schema evolution for merge operations. This is a standard Delta Lake setting.
     spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
 
     STORAGE_ACCOUNT_NAME = "esg01storage"
@@ -87,9 +111,7 @@ if __name__ == "__main__":
     fleet_destination_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
     truck_destination_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
 
-    # --- Process Data ---
-    process_and_merge_data(spark, fleet_source_path, fleet_destination_path, ["delivery_id"], "Fleet")
+    # handle_updates is True for Fleet data because it has a multi-event lifecycle
+    process_and_merge_data(spark, fleet_source_path, fleet_destination_path, ["delivery_id"], "Fleet", handle_updates=True)
     process_and_merge_data(spark, truck_source_path, truck_destination_path, ["delivery_id", "EventTimestamp"], "Truck Telemetry")
-
-
-
+    
