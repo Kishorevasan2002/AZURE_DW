@@ -1,12 +1,58 @@
-CREATE DATABASE GoldDB;
-GO
+-- Use the database where your Gold layer tables are exposed.
+-- This might be 'GoldDB' or your Synapse default database.
 USE GoldDB;
 GO
+
+IF OBJECT_ID('vw_enriched_delivery_performance', 'V') IS NOT NULL
+    DROP VIEW vw_enriched_delivery_performance;
+GO
+
 CREATE VIEW vw_enriched_delivery_performance
 AS
-SELECT *
+SELECT
+    -- Core Identifiers
+    delivery_id,
+    customer_id,
+    
+    -- Time and Status
+    delivery_date,
+    pickup_hour,
+    time_of_day,
+    delivery_status,
+    on_time_status,
+    actual_delivery_ts,
+
+    -- Driver and Truck Details
+    driver_name,
+    experience_level,
+    truck_model,
+    emission_standard,
+    last_maintenance_date,
+    
+    -- Location and Route Details
+    pickup_location,
+    delivery_location,
+    region,
+    traffic_index,
+    traffic_condition,
+    
+    -- Cargo and Trip KPIs
+    cargo_type,
+    cargo_load_category,
+    trip_distance_km,
+    delivery_duration_hours,
+    avg_speed_kmh,
+    
+    -- ESG and Anomaly KPIs
+    fuel_efficiency_km_per_liter,
+    total_co2_emitted_kg,
+    co2_efficiency_kg_per_km,
+    alert_type
 FROM
     OPENROWSET(
         BULK 'abfss://datawarehouse@esg01storage.dfs.core.windows.net/gold/enriched_delivery_performance/',
         FORMAT = 'DELTA'
-    ) AS [result]
+    ) AS [result];
+GO
+
+SELECT * FROM vw_enriched_delivery_performance;
