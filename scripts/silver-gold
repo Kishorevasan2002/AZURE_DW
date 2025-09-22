@@ -88,7 +88,7 @@ def main():
     (final_gold_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(gold_output_path))
     
-    print("✅ Successfully wrote enriched_delivery_performance to the gold layer.")
+    print(" Successfully wrote enriched_delivery_performance to the gold layer.")
     display(final_gold_df)
 
 if __name__ == "__main__":
