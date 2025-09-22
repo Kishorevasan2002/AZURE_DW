@@ -1,24 +1,25 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, to_timestamp, avg, max, sum, round, when
+from pyspark.sql.functions import col, to_timestamp, avg, max, sum, round, when, first
 from pyspark.sql.utils import AnalysisException
 
 def main():
     """
     Main function for the silver layer transformation.
-    This final version includes division-by-zero protection, the on-time status KPI,
-    and the new cargo load category for BI.
+    This version reads from the corrected and reliable Bronze tables, simplifying the logic
+    and ensuring data integrity.
     """
 
     # --- Configuration ---
     STORAGE_ACCOUNT_NAME = "esg01storage"
-    BRONZE_CONTAINER = "datawarehouse"
-    SILVER_CONTAINER = "datawarehouse"
+    CONTAINER = "datawarehouse"
 
     # --- Input Paths ---
-    fleet_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
-    truck_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
-    silver_output_path = f"abfss://{SILVER_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/silver/delivery_summary/"
+    # Reading from the reliable Bronze layer instead of raw files.
+    fleet_bronze_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
+    truck_bronze_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
+    silver_output_path = f"abfss://{CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/silver/delivery_summary/"
 
+    print("--- Reading Bronze Layer Data ---")
     fleet_df = spark.read.format("delta").load(fleet_bronze_path)
     truck_df = spark.read.format("delta").load(truck_bronze_path)
 
@@ -26,16 +27,19 @@ def main():
     fleet_silver_df = (fleet_df
         .withColumn("pickup_ts", to_timestamp(col("pickup_time")))
         .withColumn("delivery_ts", to_timestamp(col("delivery_time")))
+        .withColumn("actual_delivery_ts", to_timestamp(col("actual_delivery_time")))
         .withColumn("delivery_duration_hours", 
-            round((col("delivery_ts").cast("long") - col("pickup_ts").cast("long")) / 3600, 2)
+            when(col("actual_delivery_ts").isNotNull(),
+                 round((col("actual_delivery_ts").cast("long") - col("pickup_ts").cast("long")) / 3600, 2)
+            ).otherwise(None)
         )
+        # Select all the available columns from the now-complete Bronze record
         .select(
             "delivery_id", "delivery_status", "cargo_type", "driver_id", "truck_id",
-            "pickup_ts", "delivery_ts", "delivery_duration_hours",
+            "customer_id", "pickup_location", "delivery_location", "traffic_condition",
+            "pickup_ts", "delivery_ts", "actual_delivery_ts", "delivery_duration_hours",
             col("trip_distance_km"), 
-            col("cargo_weight_ton"),
-            col("location").alias("delivery_location"),
-            col("ingestion_time").alias("bronze_ingestion_time")
+            col("cargo_weight_ton")
         )
     )
 
@@ -46,11 +50,12 @@ def main():
             round(avg("speed"), 2).alias("avg_speed_kmh"),
             round(max("engine_temp"), 2).alias("max_engine_temp_celsius"),
             round(sum("fuel_used"), 2).alias("total_fuel_used_liters"),
-            round(sum("co2_emitted"), 2).alias("total_co2_emitted_kg")
+            round(sum("co2_emitted"), 2).alias("total_co2_emitted_kg"),
+            first("alert_type", ignorenulls=True).alias("alert_type")
         )
     )
 
-    # --- 3. Join and Calculate Final KPIs with Protections ---
+    # --- 3. Join and Calculate Final KPIs ---
     delivery_summary_df = (fleet_silver_df.join(truck_agg_df, "delivery_id", "left")
         .withColumn("fuel_efficiency_km_per_liter", 
             when(col("total_fuel_used_liters") > 0, round(col("trip_distance_km") / col("total_fuel_used_liters"), 2))
@@ -61,9 +66,9 @@ def main():
             .otherwise(0)
         )
         .withColumn("on_time_status",
-            when(col("avg_speed_kmh").isNull(), "Status Unknown")
-            .when(col("avg_speed_kmh") < 40, "Delayed")
-            .otherwise("On-Time")
+            when(col("actual_delivery_ts").isNull(), "In Transit")
+            .when(col("actual_delivery_ts") <= col("delivery_ts"), "On-Time")
+            .otherwise("Delayed")
         )
         .withColumn("cargo_load_category",
             when(col("cargo_weight_ton") > 15, "Heavy Load")
@@ -73,12 +78,12 @@ def main():
     )
 
     # --- 4. Write to Silver Layer ---
+    print(f"\n--- Writing {delivery_summary_df.count()} summary records to the Silver layer ---")
     (delivery_summary_df.write
         .format("delta").mode("overwrite").option("overwriteSchema", "true").save(silver_output_path))
     
     print("Successfully wrote delivery_summary to silver layer.")
     display(delivery_summary_df)
-
 
 if __name__ == "__main__":
     main()
