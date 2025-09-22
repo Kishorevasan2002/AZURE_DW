@@ -1,4 +1,45 @@
+-- Query 1: For the Fleet Logistics stream (INPUTFLEET)
+-- This query captures all fields related to the delivery lifecycle.
+SELECT
+    delivery_id,
+    truck_id,
+    driver_id,
+    customer_id,
+    pickup_time,
+    delivery_time,
+    actual_delivery_time,
+    trip_distance_km,
+    cargo_weight_ton,
+    cargo_type,
+    delivery_status,
+    pickup_location,
+    delivery_location,
+    traffic_condition,
+    event_type
+INTO OUTPUTDELIVERY
+FROM INPUTFLEET;
 
+-- ----------------------------------------------------------------------------
+
+-- Query 2: For the Truck Telemetry stream (INPUTTRUCK)
+SELECT
+    delivery_id,
+    truck_id,
+    speed,
+    fuel_used,
+    co2_emitted,
+    engine_temp,
+    alert_type,
+    traffic_condition,
+    event_date,
+    EventTimestamp,
+    event_type
+INTO OUTPUTTELEMETRY
+FROM INPUTTRUCK;
+
+****************************************************************************************
+
+-- if you you want custompath(while setting up output mention in custompath({custompath}))
 SELECT
     delivery_id,
     truck_id,
@@ -10,8 +51,8 @@ SELECT
     cargo_type,
     delivery_status,
     location,
-    event_type,
-    CONCAT(
+    event_type
+    CONCAT
         'year=', DATENAME(yyyy, CAST(pickup_time AS datetime)), '/',
         'month=', RIGHT('0' + CAST(DATEPART(mm, CAST(pickup_time AS datetime)) AS NVARCHAR(max)), 2), '/',
         'day=', RIGHT('0' + CAST(DATEPART(dd, CAST(pickup_time AS datetime)) AS NVARCHAR(max)), 2), '/',
