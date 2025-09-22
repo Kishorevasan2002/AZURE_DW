@@ -81,263 +81,90 @@ The platform follows a **streaming + batch processing architecture**, moving dat
 
 ---
 
+## 🚀 Architecture Components
+
+### 1. Create Event Hubs Namespace & Event Hubs
+- Create a **Namespace** in the Azure Portal (SKU: Standard).  
+- Add Event Hubs:  
+  - `esg-fleet-events` (delivery events)  
+  - `esg-fleet-telemetry` (truck telemetry)  
+- Configure partitions (4–8) and retention (7 days).  
+- Add a **Consumer Group** for Stream Analytics (e.g., `asa_consumer`).  
+
+---
+
+### 2. Create ADLS Gen2 Containers & Assign Roles
+- Create containers in your ADLS account:  
+  - `bronze`  
+  - `silver`  
+  - `gold`  
+  - `bronze/errors`  
+- In **Access control (IAM)**, assign:
+  - **ENABLE hierarchical namespace and soft delete**  
+  - **Storage Blob Data Contributor** role to the **Stream Analytics Managed Identity**.  
+  - **Storage Blob Data Contributor** role to the **Synapse Managed Identity**.  
+
+---
+
+### 3. Create Stream Analytics Job
+- In Azure Portal → **Stream Analytics job** → Create `esg-shaper`.  
+- **Inputs**:  
+  - Event Hub stream inputs (`esg-fleet-events`, `esg-fleet-telemetry`).  
+- **Outputs**:  
+  - ADLS Gen2 (`bronze/processed/`) in JSON.
+  - Optional: Power BI for real-time dashboards.  
+- **Query**:  
+  Define aggregation and joins between telemetry and delivery events (see `SQL script`).  
+
+---
+
+### 4. Deploy & Test
+- Start the ASA job from the portal.  
+- Push sample events into Event Hubs using the simulator.  
+- Validate outputs in ADLS:  
+  - Raw JSON in `eventhub-capture` (via Event Hub Capture).  
+  - Processed/aggregated JSON/Parquet in `bronze/processed/YYYY/...`.  
+- Verify Event Hub metrics and Stream Analytics diagnostics in the Azure Portal.  
+
+---
+
+### 5. Connect Downstream (Synapse + Power BI) (verify scripts)
+- Synapse/PySpark jobs load data from `bronze/processed/` → transform into **Delta tables** in Bronze/Silver/Gold zones.  
+- Build **Serverless SQL external views** for Power BI (`vw_enriched_delivery_performance`).  
+- Connect Power BI via **DirectQuery** for real-time reporting.  
+
+---
+
+##  6. Security & Managed Identity Setup
+- **Stream Analytics Managed Identity**:  
+  - Enable under **Identity** → System assigned → On.  
+- **Assign Permissions**:  
+  - Storage account → Access control → Add **Storage Blob Data Contributor** → assign ASA managed identity.  
+  - Do the same for **Synapse Managed Identity**.  
+- **Event Hubs**:  
+  - Use minimal **Shared access policies** (Data Sender for simulator).  
+  - Store secrets in **Azure Key Vault** for secure use across services.  
+
+---
+
+## ✅ Checklist
+- [x] Event Hubs namespace
+- [x] ADLS containers provisioned (`bronze/silver/gold/errors`)  
+- [x] Stream Analytics job created with Event Hub input + ADLS output  
+- [x] Managed Identities enabled and assigned correct RBAC roles  
+- [x] End-to-end pipeline tested with simulator → Event Hubs → ASA → ADLS → Synapse → Power BI  
+
+---
+
+
 ### Execution Order
 
 1. **Data Processing Pipeline**
    - Run **Bronze ingestion script**(sample_code_snipets)
- 
-```
-def process_and_merge_data(spark: input_path: str, output_path: str, unique_keys: list, data_source_name: str):
-    print(f"Starting ingestion for {data_source_name} from {input_path}")
-    try:
-        # Read the new data from the source path
-        new_data_df = spark.read.json(input_path)
-
-        if new_data_df.rdd.isEmpty():
-            print(f"No new data found for {data_source_name}. Skipping.")
-            return
-
-        updates_df = (new_data_df
-                      .withColumn("ingestion_time", current_timestamp())
-                      .dropDuplicates(unique_keys)
-                     )
-        
-        # This log now represents records read from the source for processing
-        print(f"Found {updates_df.count()} unique records in source to process for {data_source_name}.")
-
-        if DeltaTable.isDeltaTable(spark, output_path):
-            print(f"Delta table found at {output_path}. Merging data...")
-            delta_table = DeltaTable.forPath(spark, output_path)
-
-            # Get the count before the merge to calculate the difference later
-            count_before = delta_table.toDF().count()
-
-            merge_condition = " AND ".join([f"target.{key} = updates.{key}" for key in unique_keys])
-
-            # Perform the merge operation. Note: .execute() returns None.
-            delta_table.alias("target").merge(updates_df.alias("updates"),condition=merge_condition).whenNotMatchedInsertAll() \
-            .option("mergeSchema", "true") \
-            .execute()
-            
-            # Get the count after the merge
-            count_after = DeltaTable.forPath(spark, output_path).toDF().count()
-            
-            # Calculate the number of newly inserted rows
-            rows_inserted = count_after - count_before
-            
-            # Provide the accurate log message
-            print(f"Merge complete. Inserted {rows_inserted} new records into the table.")
-
-        else:
-            print(f"Creating new Delta table for {data_source_name} at {output_path}")
-            updates_df.write \
-            .format("delta") \
-            .mode("overwrite") \
-            .option("overwriteSchema", "true") \
-            .save(output_path)
-            print("New table created.")
-    except Exception as e:
-        print(f"An error occurred during ingestion for {data_source_name}: {e}")
-
-
-if __name__ == "__main__":
-    # --- Process Data ---
-    process_and_merge_data(spark, fleet_source_path, fleet_destination_path, ["delivery_id"], "Fleet")
-    process_and_merge_data(spark, truck_source_path, truck_destination_path, ["delivery_id", "EventTimestamp"], "Truck Telemetry")
-    
-```
----
    - Run **Silver transformation script**(sample_code_snipets)
-```
-def main():
-    """
-    Main function for the  silver layer transformation.
-    """
-    # --- Input Paths (Bronze Layer) ---
-    fleet_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processeddelivery/"
-    truck_bronze_path = f"abfss://{BRONZE_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/bronze/processedtelemetry/"
-
-    # --- Output Path (Silver Layer) ---
-    silver_output_path = f"abfss://{SILVER_CONTAINER}@{STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/silver/delivery_summary/"
-
-    print("--- Reading Bronze Layer Tables ---")
-    try:
-        fleet_df = spark.read.format("delta").load(fleet_bronze_path)
-        truck_df = spark.read.format("delta").load(truck_bronze_path)
-        print("Successfully read fleet and truck bronze tables.")
-    except AnalysisException as e:
-        print(f"Error reading bronze tables: {e}. Please ensure the paths are correct and the tables exist.")
-        return
-
-    # --- 1. Clean and Transform Fleet Data ---
-    print("\n--- Transforming Fleet Data ---")
-    fleet_silver_df = (fleet_df
-        .withColumn("pickup_ts", to_timestamp(col("pickup_time")))
-        .withColumn("delivery_ts", to_timestamp(col("delivery_time")))
-        .withColumn("delivery_duration_hours", 
-            round((col("delivery_ts").cast("long") - col("pickup_ts").cast("long")) / 3600, 2) # Rounded
-        )
-        .select(
-            "delivery_id", "delivery_status", "cargo_type", "driver_id", "truck_id",
-            "pickup_ts", "delivery_ts", "delivery_duration_hours",
-            col("trip_distance_km"), 
-            col("cargo_weight_ton"),
-            col("ingestion_time").alias("bronze_ingestion_time"),
-            col("location").alias("delivery_location")
-        )
-    )
-    print("Fleet data transformation complete.")
-
-    # --- 2. Aggregate Truck Telemetry Data ---
-    print("\n--- Aggregating Truck Telemetry Data ---")
-    truck_agg_df = (truck_df
-        .groupBy("delivery_id")
-        .agg(
-            round(avg("speed"), 2).alias("avg_speed_kmh"),
-            round(max("engine_temp"), 2).alias("max_engine_temp_celsius"),
-            round(sum("fuel_used"), 2).alias("total_fuel_used_liters"),
-            round(sum("co2_emitted"), 2).alias("total_co2_emitted_kg")
-        )
-    )
-    print("Truck telemetry aggregation complete.")
-
-    # --- 3. Join Fleet and Aggregated Telemetry Data ---
-    print("\n--- Joining transformed data to create the delivery summary ---")
-    delivery_summary_df = fleet_silver_df.join(
-        truck_agg_df,
-        "delivery_id",
-        "left"
-    )
-
-    # --- 4. ADDED: Enrich with Efficiency KPIs ---
-    print("\n--- Enriching with new efficiency KPIs (Fuel and CO2) ---")
-    enriched_df = (delivery_summary_df
-        .withColumn("fuel_efficiency_km_per_liter",
-            # Handle potential divide-by-zero errors
-            when(col("total_fuel_used_liters") > 0,
-                 round(col("trip_distance_km") / col("total_fuel_used_liters"), 2)
-            ).otherwise(0)
-        )
-        .withColumn("co2_efficiency_kg_per_km",
-            # Handle potential divide-by-zero errors
-            when(col("trip_distance_km") > 0,
-                 round(col("total_co2_emitted_kg") / col("trip_distance_km"), 2)
-            ).otherwise(0)
-        )
-    )
-    print("Enrichment complete.")
-    
-    print(f"Join complete. The resulting silver table has {enriched_df.count()} records.")
-
-    # --- 5. Write to Silver Layer ---
-    print(f"\n--- Writing to Silver Layer at {silver_output_path} ---")
-    (enriched_df.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true") 
-        .save(silver_output_path)
-    )
-    print("Successfully wrote delivery summary to silver layer.")
-
-    # # --- 6. Verification Step ---
-    # print("\n--- Verifying Final Silver Table ---")
-    # silver_df_test = spark.read.format("delta").load(silver_output_path)
-    # # Using display() is often better in notebooks for interactive viewing
-    # display(silver_df_test)
-
-if __name__ == "__main__":
-    main()
-
-```
----
    - Run **Gold enrichment script**(sample_code_snipets)
-```
-def main():
-    spark = SparkSession.builder.getOrCreate()
-    print("--- Reading Silver and All Reference Tables ---")
-    try:
-        silver_df = spark.read.format("delta").load(silver_input_path)
-        driver_df = spark.read.format("delta").load(driver_details_path)
-        truck_df = spark.read.format("delta").load(truck_details_path)
-        location_df = spark.read.format("delta").load(location_details_path)
-        print("Successfully read all source tables.")
-    except AnalysisException as e:
-        print(f"Error reading tables: {e}. Please ensure all paths are correct and tables exist.")
-        return
 
-    # --- 1. Join Silver Data with All Reference Tables ---
-    print("\n--- Enriching performance data with all available context ---")
-    
-    # The silver table needs a location column to join with location_details
-    # Let's assume the silver table has 'delivery_location' from the original fleet data
-    enriched_df = (silver_df
-        # Join with driver details
-        .join(driver_df, "driver_id", "left")
-        # Join with truck details
-        .join(truck_df, "truck_id", "left")
-        # Join with location details using the delivery's actual location
-        .join(location_df, silver_df.delivery_location == location_df.location_name, "left")
-    )
-
-    # --- 2. Select and Organize the Final Gold Table ---
-    # This step creates a clean, well-ordered table for analysts.
-    final_gold_df = enriched_df.select(
-        # Delivery Core Info
-        col("delivery_id"),
-        to_date(col("pickup_ts")).alias("delivery_date"),
-        col("delivery_status"),
-        
-        # Driver Info
-        col("driver_id"),
-        col("driver_name"),
-        col("experience_level"),
-        
-        # Truck Info
-        col("truck_id"),
-        col("truck_model"),
-        col("emission_standard"),
-        col("last_maintenance_date"),
-        
-        # Location Info
-        col("location_name").alias("delivery_location_name"), # Renamed to avoid ambiguity
-        col("region"),
-        col("traffic_index"),
-        
-        # Performance Metrics
-        col("trip_distance_km"),
-        col("delivery_duration_hours"),
-        col("avg_speed_kmh"),
-        
-        # ESG Metrics
-        col("fuel_efficiency_km_per_liter"),
-        col("total_co2_emitted_kg"),
-        col("co2_efficiency_kg_per_km")
-    ).orderBy("delivery_date", "delivery_id")
-    
-    print("Enrichment complete. Final table is ready.")
-
-    # --- 3. Write to Gold Layer ---
-    print(f"\n--- Writing to Gold Layer at {gold_output_path} ---")
-    (final_gold_df.write
-        .format("delta")
-        .mode("overwrite")
-        .option("overwriteSchema", "true") 
-        .save(gold_output_path)
-    )
-    print("Successfully wrote enriched_delivery_performance to the gold layer.")
-
-    # # --- 4. Verification Step ---
-    # print("\n--- Verifying Final Gold Table ---")
-    # gold_df_test = spark.read.format("delta").load(gold_output_path)
-    # display(gold_df_test)
-
-
-if __name__ == "__main__":
-    main()
-
-```
-
-### Order of Execution
+### Execution
 
 ![Screenshot 2025-09-20 132758-mh](https://github.com/user-attachments/assets/d10ca7ea-8786-4248-8c5c-945e18425065)
 
@@ -352,6 +179,7 @@ if __name__ == "__main__":
 ---
 
 3. **Power BI Connection**
+The live dashboard provides a **real-time view** of fleet performance & ESG KPIs, enabling **data-driven decision-making**.
    - In **Power BI Desktop** → `Get Data > Azure Synapse Analytics SQL`  
    - Enter Synapse Serverless SQL endpoint:  
      ```
@@ -368,10 +196,5 @@ if __name__ == "__main__":
 - **Predictive Analytics** – Train ML models on Gold data for:  
   - Delivery time predictions  
   - Predictive truck maintenance  
-
----
-
-## 📊 Final Power BI Dashboard
-The live dashboard provides a **real-time view** of fleet performance & ESG KPIs, enabling **data-driven decision-making**.
 
 
